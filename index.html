@@ -186,6 +186,27 @@ textarea.inp{height:36vh;resize:none;line-height:1.5}
 .steps{padding-left:22px;font-size:15px;line-height:1.55;margin-bottom:14px}.steps li{margin-bottom:8px}
 .toast{position:fixed;left:50%;bottom:calc(30px + env(safe-area-inset-bottom));transform:translate(-50%,20px);background:var(--text);color:var(--bg);padding:11px 16px;border-radius:12px;font-size:14px;font-weight:500;opacity:0;transition:all .25s;z-index:20;max-width:88vw;text-align:center;pointer-events:none}
 .toast.show{opacity:1;transform:translate(-50%,0)}
+
+/* ---------- GitHub browser ---------- */
+.ghbar{display:grid;grid-template-columns:1fr auto;gap:10px}
+.ghbar .btn{width:auto;padding:0 20px}
+.crumbs{display:flex;flex-wrap:wrap;align-items:center;gap:0 4px;margin:14px 0 6px;font-size:14px}
+.crumbs:empty{display:none}
+.crumbs button{color:var(--accent);font-weight:600;padding:6px 2px}
+.crumbs .cur{font-weight:700;padding:6px 2px}
+.crumbs i{font-style:normal;color:var(--muted)}
+#ghFilter{margin:6px 0 4px}
+.grow{display:flex;align-items:center;gap:12px;width:100%;padding:13px 4px;border-bottom:1px solid var(--line)}
+.grow:active{background:var(--surface2)}
+.grow .gi{font-size:21px;width:28px;text-align:center;flex:none}
+.grow .gt{flex:1;min-width:0}
+.grow .gn{font-weight:600;font-size:15px;line-height:1.3;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;word-break:break-word}
+.grow .gs{font-size:12.5px;color:var(--muted);margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.grow .go{color:var(--muted);font-size:20px;flex:none}
+.gtag{color:var(--accent);font-weight:600}
+.ghtoken{margin:18px 0 16px}
+.ghtoken summary{font-size:13px;font-weight:600;color:var(--muted);cursor:pointer;padding:6px 0}
+.ghtoken .inp{margin-top:8px}
 </style>
 </head>
 <body>
@@ -269,6 +290,7 @@ textarea.inp{height:36vh;resize:none;line-height:1.5}
   <h2>Add something to read</h2>
   <button class="opt" id="optPaste"><span class="em">📋</span><div><b>Paste text</b><small>An article, notes, anything you copied</small></div></button>
   <button class="opt" id="optFile"><span class="em">📄</span><div><b>Import a file</b><small>.txt, .pdf or .epub from Files</small></div></button>
+  <button class="opt" id="optGit"><span class="em">🐙</span><div><b>From GitHub</b><small>Browse a repository and pick a book</small></div></button>
   <button class="opt" id="optBooks"><span class="em">📚</span><div><b>From Books app</b><small>EPUB or PDF you added to Apple Books</small></div></button>
 </div>
 
@@ -293,6 +315,22 @@ textarea.inp{height:36vh;resize:none;line-height:1.5}
   </ol>
   <p class="note" style="margin:0 0 16px">No Share option? Open the <b>Files</b> app → <b>iCloud Drive → Books</b>; books you added yourself are often already there. Books bought from the Apple Book Store are copy-protected and can’t be imported.</p>
   <div class="row2"><button class="btn js-close">Cancel</button><button class="btn primary" id="pickBook">Choose book</button></div>
+</div>
+
+<!-- ADD: GitHub -->
+<div class="sheet" id="gitSheet">
+  <div class="grab"></div>
+  <h2>From GitHub</h2>
+  <div class="ghbar"><input class="inp" id="ghIn" placeholder="Username or owner/repo" autocapitalize="off" autocorrect="off" spellcheck="false" aria-label="GitHub username or repository"><button class="btn primary" id="ghGo">Browse</button></div>
+  <div class="crumbs" id="ghCrumbs"></div>
+  <input class="inp" id="ghFilter" placeholder="Filter this list" autocapitalize="off" autocorrect="off" spellcheck="false" hidden aria-label="Filter this list">
+  <div id="ghList"></div>
+  <details class="ghtoken">
+    <summary>Private repository?</summary>
+    <input class="inp" id="ghToken" type="password" placeholder="GitHub token (read-only)" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="GitHub token">
+    <p class="note">Public repositories need no token. For a private one, create a fine-grained personal access token with read-only access to <b>Contents</b> and paste it here. It is saved only in this browser.</p>
+  </details>
+  <button class="btn js-close">Close</button>
 </div>
 
 <!-- SETTINGS -->
@@ -595,7 +633,7 @@ async function readPdf(file){
   for (const s of sections){ if (s.s !== prev && s.s < wi) clean.push(s); else if (s.s === prev) clean[clean.length-1].t = clean[clean.length-1].t.split('–')[0] + '–' + (s.t.split(/[–\s]/).pop()); prev = s.s; }
   return {text, sections: clean};
 }
-async function importFile(file){
+async function importFile(file, src){
   let ext = (file.name.split('.').pop() || '').toLowerCase();
   if (!file.size){ toast('That file is empty. In Books, use Share → Save to Files first, then import the saved copy.', 6000); return; }
   try {
@@ -612,6 +650,7 @@ async function importFile(file){
   } catch(err){ toast(err.message || 'Could not read that file'); return; }
   if (!text.trim()){ toast('No readable text found in that file'); return; }
   const d = makeDoc(title, text, sections);
+  if (src) d.src = src;
   await Store.put(d); docs.push(d);
   toast(`Added “${title}” · ${fmt(d.words)} words`);
   openDoc(d.id); showMap();
@@ -637,6 +676,128 @@ $('#saveAdd').onclick = async () => {
   const d = makeDoc($('#newTitle').value.trim(), text);
   await Store.put(d); docs.push(d); closeSheet(); openDoc(d.id); showMap();
 };
+
+/* ---------- GitHub library ---------- */
+const GH_EXT = /\.(pdf|epub|txt|md|markdown|html?)$/i;
+const gh = Object.assign({q: 'metallllic', token: ''}, ls.get('fr.github', {}));
+const ghSave = () => ls.set('fr.github', {q: gh.q, token: gh.token});
+let ghOwner = '', ghRepo = '', ghPath = [], ghItems = [], ghHidden = 0, ghReq = 0;
+const fmtSize = n => n >= 1048576 ? (n / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(n / 1024)) + ' KB';
+const ghKey = it => 'gh:' + (ghOwner + '/' + ghRepo).toLowerCase() + '/' + it.path;
+const ghMsg = html => { $('#ghList').innerHTML = `<p class="note" style="text-align:center;padding:22px 6px">${html}</p>`; };
+
+async function ghApi(url){
+  const h = {Accept: 'application/vnd.github+json'};
+  if (gh.token) h.Authorization = 'Bearer ' + gh.token;
+  let r;
+  try { r = await fetch('https://api.github.com' + url, {headers: h}); }
+  catch(e){ throw new Error('Could not reach GitHub. Check your connection.'); }
+  if (r.status === 404) throw new Error('Not found. For a private repository, add a token below.');
+  if (r.status === 401) throw new Error('GitHub did not accept that token.');
+  if (r.status === 403 || r.status === 429){
+    throw new Error(r.headers.get('x-ratelimit-remaining') === '0'
+      ? 'GitHub’s limit for requests without a token is used up for now. Try again in a while, or add a token below.'
+      : 'GitHub refused the request.');
+  }
+  if (!r.ok) throw new Error('GitHub returned an error (' + r.status + ').');
+  return r.json();
+}
+function ghCrumbs(){
+  const c = $('#ghCrumbs');
+  if (!ghOwner){ c.innerHTML = ''; return; }
+  if (!ghRepo){ c.innerHTML = `<span class="cur">${esc(ghOwner)}</span>`; return; }
+  const parts = [`<button data-c="u">${esc(ghOwner)}</button>`,
+    ghPath.length ? `<button data-c="r">${esc(ghRepo)}</button>` : `<span class="cur">${esc(ghRepo)}</span>`];
+  ghPath.forEach((p, i) => parts.push(i === ghPath.length - 1 ? `<span class="cur">${esc(p)}</span>` : `<button data-c="${i + 1}">${esc(p)}</button>`));
+  c.innerHTML = parts.join('<i>/</i>');
+}
+async function ghRepos(user){
+  const req = ++ghReq; ghOwner = user; ghRepo = ''; ghPath = []; ghItems = [];
+  $('#ghFilter').hidden = true; ghCrumbs(); ghMsg('Loading…');
+  try {
+    const list = await ghApi('/users/' + encodeURIComponent(user) + '/repos?per_page=100&sort=pushed');
+    if (req !== ghReq) return;
+    gh.q = user; ghSave(); ghItems = list;
+    if (!list.length){ ghMsg('No public repositories for this user.'); return; }
+    $('#ghList').innerHTML = list.map((r, i) => `<button class="grow" data-repo="${i}"><span class="gi">📚</span><div class="gt"><div class="gn">${esc(r.name)}</div><div class="gs">${esc(r.description || 'No description')}</div></div><span class="go">›</span></button>`).join('');
+  } catch(e){ if (req === ghReq) ghMsg(esc(e.message)); }
+}
+async function ghDir(path){
+  const req = ++ghReq; ghPath = path; ghItems = [];
+  const f = $('#ghFilter'); f.value = ''; f.hidden = true; ghCrumbs(); ghMsg('Loading…');
+  try {
+    const url = '/repos/' + encodeURIComponent(ghOwner) + '/' + encodeURIComponent(ghRepo) + '/contents' + (path.length ? '/' + path.map(encodeURIComponent).join('/') : '');
+    const list = await ghApi(url);
+    if (req !== ghReq) return;
+    if (!Array.isArray(list)) throw new Error('That path is a file, not a folder.');
+    gh.q = ghOwner + '/' + ghRepo; ghSave();
+    ghItems = list.filter(x => (x.type === 'dir' && !x.name.startsWith('.')) || (x.type === 'file' && GH_EXT.test(x.name)))
+      .sort((a, b) => (a.type === b.type ? 0 : a.type === 'dir' ? -1 : 1) || a.name.localeCompare(b.name, undefined, {numeric: true}));
+    ghHidden = list.filter(x => x.type === 'file' && !GH_EXT.test(x.name)).length;
+    f.hidden = ghItems.length < 8;
+    ghList();
+  } catch(e){ if (req === ghReq) ghMsg(esc(e.message)); }
+}
+function ghList(){
+  const q = $('#ghFilter').value.trim().toLowerCase();
+  let html = ghItems.map((it, i) => ({it, i})).filter(({it}) => !q || it.name.toLowerCase().includes(q)).map(({it, i}) => {
+    if (it.type === 'dir') return `<button class="grow" data-dir="${i}"><span class="gi">📁</span><div class="gt"><div class="gn">${esc(it.name)}</div></div><span class="go">›</span></button>`;
+    const inLib = docs.some(d => d.src === ghKey(it));
+    return `<button class="grow" data-file="${i}"><span class="gi">📄</span><div class="gt"><div class="gn">${esc(it.name)}</div><div class="gs">${esc(it.name.split('.').pop().toUpperCase())} · ${fmtSize(it.size)}${inLib ? ' · <span class="gtag">In your library</span>' : ''}</div></div><span class="go">${inLib ? '✓' : '›'}</span></button>`;
+  }).join('');
+  if (!html) ghMsg(q ? 'Nothing matches that filter.' : 'No books or folders here. Flash Reader opens PDF, EPUB, TXT, MD and HTML files.');
+  else {
+    if (ghHidden && !q) html += `<p class="note">${ghHidden} other file${ghHidden > 1 ? 's' : ''} hidden because Flash Reader can’t open ${ghHidden > 1 ? 'them' : 'it'}.</p>`;
+    $('#ghList').innerHTML = html;
+  }
+}
+function ghGo(){
+  const q = $('#ghIn').value.trim().replace(/^(https?:\/\/)?(www\.)?github\.com\//i, '').replace(/\.git$/i, '');
+  const [owner, repo] = q.split('/').filter(Boolean);
+  if (!owner){ ghMsg('Enter a GitHub username, or owner/repo.'); return; }
+  $('#ghIn').value = repo ? owner + '/' + repo : owner;
+  if (repo){ ghOwner = owner; ghRepo = repo; ghDir([]); } else ghRepos(owner);
+}
+async function ghDownload(url, size){
+  let r;
+  try { r = await fetch(url); } catch(e){ throw new Error('Download failed. Check your connection.'); }
+  if (!r.ok) throw new Error('Could not download that file (' + r.status + ').');
+  if (!r.body || !r.body.getReader) return r.blob();
+  const total = +r.headers.get('content-length') || size || 0, rd = r.body.getReader(), parts = [];
+  let got = 0, last = 0;
+  for (;;){
+    const {done, value} = await rd.read(); if (done) break;
+    parts.push(value); got += value.length;
+    if (total && Date.now() - last > 250){ last = Date.now(); toast(`Downloading… ${Math.min(99, Math.round(got / total * 100))}%`, 60000); }
+  }
+  return new Blob(parts);
+}
+async function ghImport(it){
+  const key = ghKey(it), have = docs.find(d => d.src === key);
+  closeSheet();
+  if (have){ openDoc(have.id); showMap(); return; }
+  toast('Downloading “' + it.name + '”…', 60000);
+  let blob;
+  try { blob = await ghDownload(it.download_url, it.size); } catch(e){ toast(e.message, 5000); return; }
+  await importFile(new File([blob], it.name), key);
+}
+$('#optGit').onclick = () => { openSheet($('#gitSheet')); $('#ghIn').value = gh.q; $('#ghToken').value = gh.token; ghGo(); };
+$('#ghGo').onclick = ghGo;
+$('#ghIn').addEventListener('keydown', e => { if (e.key === 'Enter'){ e.preventDefault(); ghGo(); } });
+$('#ghFilter').addEventListener('input', ghList);
+$('#ghToken').addEventListener('input', e => { gh.token = e.target.value.trim(); ghSave(); });
+$('#ghCrumbs').addEventListener('click', e => {
+  const b = e.target.closest('button'); if (!b) return;
+  if (b.dataset.c === 'u') ghRepos(ghOwner);
+  else if (b.dataset.c === 'r') ghDir([]);
+  else ghDir(ghPath.slice(0, +b.dataset.c));
+});
+$('#ghList').addEventListener('click', e => {
+  const b = e.target.closest('button'); if (!b) return;
+  if (b.dataset.repo !== undefined){ const r = ghItems[+b.dataset.repo]; ghOwner = r.owner.login; ghRepo = r.name; $('#ghIn').value = ghOwner + '/' + ghRepo; ghDir([]); }
+  else if (b.dataset.dir !== undefined) ghDir(ghPath.concat(ghItems[+b.dataset.dir].name));
+  else if (b.dataset.file !== undefined) ghImport(ghItems[+b.dataset.file]);
+});
 
 /* settings */
 function applySettings(){
